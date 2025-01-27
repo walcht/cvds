@@ -20,6 +20,7 @@ class CVDSMetadata:
     downsampling_inter: Literal["trilinear"]
     color_depth: int
     lz4_compressed: bool
+    decompressed_chunk_size_in_bytes: int
     voxel_dims: tuple[int]
     euler_rotation: tuple[int]
 

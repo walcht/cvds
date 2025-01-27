@@ -97,7 +97,14 @@ class ImagesConverter(BaseConverter):
             self.get_nbr_chunks(metadata.original_dims, chunk_size, res_lvl)
             for res_lvl in range(0, nbr_resolution_levels + 1)
         ]
-        total_nbr_chunks = [x + y + z for x, y, z in nbr_chunks_per_res_lvl]
+        total_nbr_chunks = [x * y * z for x, y, z in nbr_chunks_per_res_lvl]
+        decompressed_chunk_size_in_bytes: int
+        if metadata.color_depth == 8:
+            decompressed_chunk_size_in_bytes = chunk_size**3
+        elif metadata.color_depth == 16:
+            decompressed_chunk_size_in_bytes = (chunk_size**3) * 2
+        else:
+            raise ValueError(f"unknown metadata color depth value: {metadata.color_depth}")
         # prompt the user for additional, non-available information:
         voxel_dim_x = click.prompt("enter voxel dimension along X axis [default=1.0] [mm]: ", type=float, default=1.0)
         voxel_dim_y = click.prompt("enter voxel dimension along Y axis [default=1.0] [mm]: ", type=float, default=1.0)
@@ -113,6 +120,7 @@ class ImagesConverter(BaseConverter):
             nbr_chunks_per_resolution_lvl=nbr_chunks_per_res_lvl,
             total_nbr_chunks=total_nbr_chunks,
             lz4_compressed=lz4_compressed,
+            decompressed_chunk_size_in_bytes=decompressed_chunk_size_in_bytes,
             downsampling_inter="trilinear",
             voxel_dims=(voxel_dim_x, voxel_dim_y, voxel_dim_z),
             euler_rotation=(euler_rot_x, euler_rot_y, euler_rot_z),
