@@ -110,9 +110,9 @@ class ImagesConverter(BaseConverter):
         voxel_dim_x = click.prompt("enter voxel dimension along X axis [default=1.0] [mm]: ", type=float, default=1.0)
         voxel_dim_y = click.prompt("enter voxel dimension along Y axis [default=1.0] [mm]: ", type=float, default=1.0)
         voxel_dim_z = click.prompt("enter voxel dimension along Z axis [default=1.0] [mm]: ", type=float, default=1.0)
-        euler_rot_x = click.prompt("enter Euler rotation around X axis [default=0.0]  [°]: ", type=float, default=0.0)
-        euler_rot_y = click.prompt("enter Euler rotation around Y axis [default=0.0]  [°]: ", type=float, default=0.0)
-        euler_rot_z = click.prompt("enter Euler rotation around Z axis [default=0.0]  [°]: ", type=float, default=0.0)
+        euler_rot_x = click.prompt("enter Euler rotation around X axis [default=180] [°]: ", type=float, default=180)
+        euler_rot_y = click.prompt("enter Euler rotation around Y axis [default=0.0] [°]: ", type=float, default=0.0)
+        euler_rot_z = click.prompt("enter Euler rotation around Z axis [default=0.0] [°]: ", type=float, default=0.0)
         self.metadata = CVDSMetadata(
             original_dims=metadata.original_dims,
             chunk_size=chunk_size,
