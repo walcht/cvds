@@ -11,6 +11,7 @@ import click
 import lz4.frame
 from tqdm import trange
 from typing import Any
+import json
 
 
 @dataclass
@@ -125,6 +126,68 @@ class ImagesConverter(BaseConverter):
             voxel_dims=(voxel_dim_x, voxel_dim_y, voxel_dim_z),
             euler_rotation=(euler_rot_x, euler_rot_y, euler_rot_z),
         )
+
+    def convert_cvds_dataset(self, cvds_dataset_dir: str, output_dir: str, resolution_lvl: int = 0) -> None:
+        """Converts a given CVDS dataset to a set of images. This is mainly
+        used for debugging/testing purposes
+
+        Parameters
+        ----------
+        cvds_dataset_dir : str
+            path to a CVDS dataset root directory (contains metadata.json)
+        resolution_lvl: int
+            the resolution level to export, by default 0
+        output_dir : str
+            output directory path. Images are ordered by their filenames.
+        """
+        if not os.path.isdir(cvds_dataset_dir):
+            raise NotADirectoryError(f"CVDS dataset path is not a directory path: ${cvds_dataset_dir}")
+        res_lvl_chunks_path = os.path.join(cvds_dataset_dir, f"resolution_level_{resolution_lvl}")
+        if not os.path.isdir(res_lvl_chunks_path):
+            raise NotADirectoryError(
+                f"CVDS dataset path doesn't contain resolution level subdirectory: {res_lvl_chunks_path}"
+            )
+        metadata_fp = os.path.join(cvds_dataset_dir, "metadata.json")
+        metadata: CVDSMetadata
+        with open(metadata_fp, mode="rt") as ts:
+            try:
+                metadata = CVDSMetadata(**json.load(ts))
+            except json.JSONDecodeError:
+                return
+        for slice_id in trange(
+            metadata.nbr_chunks_per_resolution_lvl[resolution_lvl][2] * metadata.chunk_size,
+            desc="converting CVDS to images",
+            unit="image",
+        ):
+            nbr_chunks_x = metadata.nbr_chunks_per_resolution_lvl[resolution_lvl][0]
+            nbr_chunks_y = metadata.nbr_chunks_per_resolution_lvl[resolution_lvl][1]
+            dim_x = nbr_chunks_x * metadata.chunk_size
+            dim_y = nbr_chunks_y * metadata.chunk_size
+            img_dtype: np.dtype
+            bpp: int  # bytes per pixel
+            if metadata.color_depth == 8:
+                img_dtype = np.uint8
+                bpp = 1
+            elif metadata.color_depth == 16:
+                img_dtype = np.uint16
+                bpp = 2
+            else:
+                raise ValueError(f"unsupported color depth value: {metadata.color_depth}")
+            img_data = np.ndarray((dim_y, dim_x), dtype=img_dtype)
+            for i in range(nbr_chunks_x * nbr_chunks_y):
+                chunk_id = i + nbr_chunks_x * nbr_chunks_y * (slice_id // metadata.chunk_size)
+                # TODO: add support for decompression
+                chunk_fp: str = os.path.join(res_lvl_chunks_path, f"chunk_{chunk_id}.cvds")
+                offset = (slice_id % metadata.chunk_size) * metadata.chunk_size * metadata.chunk_size * bpp
+                chunk_slice = np.memmap(chunk_fp, img_dtype, "r", offset, (metadata.chunk_size, metadata.chunk_size))
+                row_start_idx = metadata.chunk_size * (i // nbr_chunks_x)
+                row_end_idx = row_start_idx + metadata.chunk_size
+                col_start_idx = metadata.chunk_size * (i % nbr_chunks_x)
+                col_end_idx = col_start_idx + metadata.chunk_size
+                img_data[row_start_idx:row_end_idx, col_start_idx:col_end_idx] = chunk_slice
+            img = Image.fromarray(img_data)
+            img_fp: str = os.path.join(output_dir, f"{slice_id}.png")
+            img.save(img_fp, "PNG")
 
     def _write_slice(
         self,

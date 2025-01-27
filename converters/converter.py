@@ -274,6 +274,13 @@ class BaseConverter(metaclass=BaseConverterMetaclass):
         """
         ...
 
+    @abstractmethod
+    def convert_cvds_dataset(
+        self,
+        cvds_dataset_dir: str,
+        output_dir: str,
+    ) -> None: ...
+
     @staticmethod
     @abstractmethod
     def is_this_converter_suitable(
