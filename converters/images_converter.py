@@ -250,10 +250,7 @@ class ImagesConverter(BaseConverter):
                 # read and downsample current slice
                 slice_data: NDArray[Any]
                 with Image.open(self.sorted_image_fps[slice_idx]) as img:
-                    if res_lvl > 0:
-                        slice_data = np.asarray(img.resize((dims[0], dims[1]), Image.Resampling.BILINEAR))
-                    else:
-                        slice_data = np.asarray(img)
+                    slice_data = np.asarray(img.resize((dims[0], dims[1]), Image.Resampling.BILINEAR))
                 # add padding (note that we add padding after downsampling to avoid averaging with padded values!)
                 padded_slice_data = np.pad(
                     slice_data, pad_width=((0, pads[1]), (0, pads[0])), mode="constant", constant_values=(0,)
