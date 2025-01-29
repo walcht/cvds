@@ -93,7 +93,7 @@ class ImagesConverter(BaseConverter):
         max_res_lvl = self.get_max_allowed_resolution_level(metadata.original_dims, chunk_size)
         nbr_resolution_levels = min(nbr_resolution_levels, max_res_lvl)
         if nbr_resolution_levels < 0:
-            nbr_resolution_levels = max_res_lvl
+            nbr_resolution_levels = max_res_lvl + 1
         nbr_chunks_per_res_lvl = [
             self.get_nbr_chunks(metadata.original_dims, chunk_size, res_lvl)
             for res_lvl in range(0, nbr_resolution_levels + 1)
@@ -127,18 +127,26 @@ class ImagesConverter(BaseConverter):
             euler_rotation=(euler_rot_x, euler_rot_y, euler_rot_z),
         )
 
-    def convert_cvds_dataset(self, cvds_dataset_dir: str, output_dir: str, resolution_lvl: int = 0) -> None:
+    def convert_cvds_dataset(
+        self,
+        cvds_dataset_dir: str,
+        output_dir: str,
+        resolution_lvl: int = 0,
+        format: str = "PNG",
+    ) -> None:
         """Converts a given CVDS dataset to a set of images. This is mainly
         used for debugging/testing purposes
 
         Parameters
         ----------
         cvds_dataset_dir : str
-            path to a CVDS dataset root directory (contains metadata.json)
-        resolution_lvl: int
-            the resolution level to export, by default 0
+            path to a CVDS dataset root directory (contains metadata.json and resolution-level subdirectories)
         output_dir : str
             output directory path. Images are ordered by their filenames.
+        resolution_lvl: int, optional
+            the resolution level to export, by default 0
+        format: str, optional
+            the image format to use, by default "PNG"
         """
         if not os.path.isdir(cvds_dataset_dir):
             raise NotADirectoryError(f"CVDS dataset path is not a directory path: ${cvds_dataset_dir}")
@@ -154,9 +162,11 @@ class ImagesConverter(BaseConverter):
                 metadata = CVDSMetadata(**json.load(ts))
             except json.JSONDecodeError:
                 return
+        if resolution_lvl > metadata.nbr_resolution_lvls:
+            raise Exception(f"provided resolution level is out of range: {resolution_lvl}")
         for slice_id in trange(
             metadata.nbr_chunks_per_resolution_lvl[resolution_lvl][2] * metadata.chunk_size,
-            desc="converting CVDS to images",
+            desc=f"converting CVDS to images [res={resolution_lvl}]",
             unit="image",
         ):
             nbr_chunks_x = metadata.nbr_chunks_per_resolution_lvl[resolution_lvl][0]
@@ -176,18 +186,30 @@ class ImagesConverter(BaseConverter):
             img_data = np.ndarray((dim_y, dim_x), dtype=img_dtype)
             for i in range(nbr_chunks_x * nbr_chunks_y):
                 chunk_id = i + nbr_chunks_x * nbr_chunks_y * (slice_id // metadata.chunk_size)
-                # TODO: add support for decompression
-                chunk_fp: str = os.path.join(res_lvl_chunks_path, f"chunk_{chunk_id}.cvds")
+                chunk_fp: str
+                chunk_slice: np.memmap
                 offset = (slice_id % metadata.chunk_size) * metadata.chunk_size * metadata.chunk_size * bpp
-                chunk_slice = np.memmap(chunk_fp, img_dtype, "r", offset, (metadata.chunk_size, metadata.chunk_size))
+                if metadata.lz4_compressed:
+                    chunk_fp = os.path.join(res_lvl_chunks_path, f"chunk_{chunk_id}.cvds.lz4")
+                    decompressed_data: bytes
+                    with lz4.frame.open(chunk_fp, mode="r") as bs:
+                        decompressed_data = bs.read()
+                    chunk_slice = np.memmap(
+                        decompressed_data, img_dtype, "r", offset, (metadata.chunk_size, metadata.chunk_size)
+                    )
+                else:
+                    chunk_fp = os.path.join(res_lvl_chunks_path, f"chunk_{chunk_id}.cvds")
+                    chunk_slice = np.memmap(
+                        chunk_fp, img_dtype, "r", offset, (metadata.chunk_size, metadata.chunk_size)
+                    )
                 row_start_idx = metadata.chunk_size * (i // nbr_chunks_x)
                 row_end_idx = row_start_idx + metadata.chunk_size
                 col_start_idx = metadata.chunk_size * (i % nbr_chunks_x)
                 col_end_idx = col_start_idx + metadata.chunk_size
                 img_data[row_start_idx:row_end_idx, col_start_idx:col_end_idx] = chunk_slice
             img = Image.fromarray(img_data)
-            img_fp: str = os.path.join(output_dir, f"{slice_id}.png")
-            img.save(img_fp, "PNG")
+            img_fp: str = os.path.join(output_dir, f"{slice_id}.{format.lower()}")
+            img.save(img_fp, format)
 
     def _write_slice(
         self,
@@ -233,7 +255,7 @@ class ImagesConverter(BaseConverter):
             dtype = np.uint16
         else:
             raise TypeError(f"unsupported image color depth: {self.metadata.color_depth}")
-        for res_lvl in range(0, self.metadata.nbr_resolution_lvls + 1):
+        for res_lvl in range(0, self.metadata.nbr_resolution_lvls):
             # create dir containing chunks for this resolution level
             res_lvl_dir = os.path.join(output_dir, f"resolution_level_{res_lvl}")
             os.mkdir(res_lvl_dir)
@@ -300,10 +322,11 @@ class ImagesConverter(BaseConverter):
 if __name__ == "__main__":
     converter = ImagesConverter()
     converter.import_dataset(
-        dataset_dir=r"C:\Users\walid\Desktop\CTDatasets\dataset_02",
+        dataset_dir=r"",
         chunk_size=128,
-        lz4_compressed=True,
+        lz4_compressed=False,
     )
     converter.write_metadata(r"output")
-    # converter.write_binary_chunks(r"output")
+    converter.write_binary_chunks(r"output")
+    # converter.convert_cvds_dataset("output", output_dir="images", resolution_lvl=0)
     print("done")

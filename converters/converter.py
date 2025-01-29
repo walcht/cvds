@@ -279,7 +279,13 @@ class BaseConverter(metaclass=BaseConverterMetaclass):
         self,
         cvds_dataset_dir: str,
         output_dir: str,
-    ) -> None: ...
+        resolution_lvl: int = 0,
+        /,
+        **kwargs,
+    ) -> None:
+        """Converts a provided CVDS dataset into this convertes format. For example, for images_converter this is
+        converts CVDS to image slices. This is mainly used for debugging and testing purposes."""
+        ...
 
     @staticmethod
     @abstractmethod
