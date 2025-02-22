@@ -1,6 +1,6 @@
 pydicom==2.4.4
 numpy==2.0.1
 click==8.1.7
-setuptools==71.1.0
 tqdm==4.66.5
-types-tqdm==4.67.0.20241221
+lz4==4.4.3
+opencv-python==4.11.0.86

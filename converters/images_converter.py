@@ -2,10 +2,10 @@ from io import TextIOWrapper, BufferedWriter
 from converter import BaseConverter, CVDSMetadata
 from dataclasses import dataclass
 import os
-from PIL import Image
 import glob
 import logging
 import numpy as np
+import cv2 as cv
 from numpy.typing import NDArray
 import click
 import lz4.frame
@@ -16,7 +16,9 @@ import json
 
 @dataclass
 class ImagesMetadata:
+    """original volume dimensions (x, y, z) or (width, height, depth)"""
     original_dims: tuple[int]
+    """color depth - either 8bit or 16bit"""
     color_depth: int
 
 
@@ -55,23 +57,22 @@ class ImagesConverter(BaseConverter):
     def extract_images_metadata(self, sorted_image_fps: list[str], verbose: bool = True) -> ImagesMetadata:
         dims: NDArray[np.uint32]
         color_depth: np.dtype
-        img_mode: str
-        with Image.open(sorted_image_fps[0]) as img:
-            dims = (img.width, img.height, len(sorted_image_fps))
-            img_mode = img.mode
-            if img.mode in {"L", "P"}:
-                color_depth = 8
-            elif img.mode == "I;16":
-                color_depth = 16
-            else:
-                raise ValueError(f"unsupported image mode/format: {img.mode}")
+        img = cv.imread(sorted_image_fps[0], cv.IMREAD_GRAYSCALE | cv.IMREAD_ANYDEPTH)
+        dims = (img.shape[1], img.shape[0], len(sorted_image_fps))
+        img_dtype = img.dtype
+        if img_dtype == np.uint8:
+            color_depth = 8
+        elif img_dtype == np.uint16:
+            color_depth = 16
+        else:
+            raise ValueError(f"unsupported image color depth: {img_dtype}")
         # verify that all provided images are consistent
         for fp in sorted_image_fps:
-            with Image.open(fp) as img:
-                if img.mode != img_mode:
-                    raise ValueError(f"inconsistent image mode across volume image slice(s): {fp}")
-                if (img.width != dims[0]) or (img.height != dims[1]):
-                    raise ValueError(f"inconsistent image dimension(s) across volume image slice(s): {fp}")
+            img = cv.imread(fp, cv.IMREAD_GRAYSCALE | cv.IMREAD_ANYDEPTH)
+            if img.dtype != img_dtype:
+                raise ValueError(f"inconsistent image color depth across volume image slice(s): {fp}")
+            if (img.shape[1] != dims[0]) or (img.shape[0] != dims[1]):
+                raise ValueError(f"inconsistent image dimension(s) across volume image slice(s): {fp}")
         if verbose:
             print(f"volume color depth: {color_depth}")
             print(f"original volume dimensions (x, y, z): ({dims[0]},{dims[1]},{dims[2]})")
@@ -96,7 +97,7 @@ class ImagesConverter(BaseConverter):
             nbr_resolution_levels = max_res_lvl + 1
         nbr_chunks_per_res_lvl = [
             self.get_nbr_chunks(metadata.original_dims, chunk_size, res_lvl)
-            for res_lvl in range(0, nbr_resolution_levels + 1)
+            for res_lvl in range(0, nbr_resolution_levels)
         ]
         total_nbr_chunks = [x * y * z for x, y, z in nbr_chunks_per_res_lvl]
         decompressed_chunk_size_in_bytes: int
@@ -107,12 +108,12 @@ class ImagesConverter(BaseConverter):
         else:
             raise ValueError(f"unknown metadata color depth value: {metadata.color_depth}")
         # prompt the user for additional, non-available information:
-        voxel_dim_x = click.prompt("enter voxel dimension along X axis [default=1.0] [mm]: ", type=float, default=1.0)
-        voxel_dim_y = click.prompt("enter voxel dimension along Y axis [default=1.0] [mm]: ", type=float, default=1.0)
-        voxel_dim_z = click.prompt("enter voxel dimension along Z axis [default=1.0] [mm]: ", type=float, default=1.0)
-        euler_rot_x = click.prompt("enter Euler rotation around X axis [default=180] [°]: ", type=float, default=180)
-        euler_rot_y = click.prompt("enter Euler rotation around Y axis [default=0.0] [°]: ", type=float, default=0.0)
-        euler_rot_z = click.prompt("enter Euler rotation around Z axis [default=0.0] [°]: ", type=float, default=0.0)
+        voxel_dim_x = click.prompt("enter voxel dimension along X axis [mm] ", type=float, default=1.0)
+        voxel_dim_y = click.prompt("enter voxel dimension along Y axis [mm] ", type=float, default=1.0)
+        voxel_dim_z = click.prompt("enter voxel dimension along Z axis [mm] ", type=float, default=1.0)
+        euler_rot_x = click.prompt("enter Euler rotation around X axis [°]  ", type=float, default=180)
+        euler_rot_y = click.prompt("enter Euler rotation around Y axis [°]  ", type=float, default=0.0)
+        euler_rot_z = click.prompt("enter Euler rotation around Z axis [°]  ", type=float, default=0.0)
         self.metadata = CVDSMetadata(
             original_dims=metadata.original_dims,
             chunk_size=chunk_size,
@@ -146,7 +147,8 @@ class ImagesConverter(BaseConverter):
         resolution_lvl: int, optional
             the resolution level to export, by default 0
         format: str, optional
-            the image format to use, by default "PNG"
+            the image format to use, by default "PNG". Note that certain formats may not support writing 16-bit
+            uint grayscale images.
         """
         if not os.path.isdir(cvds_dataset_dir):
             raise NotADirectoryError(f"CVDS dataset path is not a directory path: ${cvds_dataset_dir}")
@@ -207,9 +209,8 @@ class ImagesConverter(BaseConverter):
                 col_start_idx = metadata.chunk_size * (i % nbr_chunks_x)
                 col_end_idx = col_start_idx + metadata.chunk_size
                 img_data[row_start_idx:row_end_idx, col_start_idx:col_end_idx] = chunk_slice
-            img = Image.fromarray(img_data)
             img_fp: str = os.path.join(output_dir, f"{slice_id}.{format.lower()}")
-            img.save(img_fp, format)
+            cv.imwrite(img_fp, img_data)
 
     def _write_slice(
         self,
@@ -270,9 +271,8 @@ class ImagesConverter(BaseConverter):
                 len(self.sorted_image_fps), desc=f"writing chunks for resolution level {res_lvl}", unit="slice"
             ):
                 # read and downsample current slice
-                slice_data: NDArray[Any]
-                with Image.open(self.sorted_image_fps[slice_idx]) as img:
-                    slice_data = np.asarray(img.resize((dims[0], dims[1]), Image.Resampling.BILINEAR))
+                img = cv.imread(self.sorted_image_fps[slice_idx], cv.IMREAD_GRAYSCALE | cv.IMREAD_ANYDEPTH)
+                slice_data = cv.resize(img, (dims[0], dims[1]), 0, 0, cv.INTER_LINEAR)
                 # add padding (note that we add padding after downsampling to avoid averaging with padded values!)
                 padded_slice_data = np.pad(
                     slice_data, pad_width=((0, pads[1]), (0, pads[0])), mode="constant", constant_values=(0,)
@@ -328,5 +328,4 @@ if __name__ == "__main__":
     )
     converter.write_metadata(r"output")
     converter.write_binary_chunks(r"output")
-    # converter.convert_cvds_dataset("output", output_dir="images", resolution_lvl=0)
     print("done")
