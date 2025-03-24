@@ -157,3 +157,4 @@ cython_debug/
 output/
 test_datasets/
 .vscode/
+residency_octree.bin

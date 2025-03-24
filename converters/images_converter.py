@@ -17,6 +17,7 @@ import json
 @dataclass
 class ImagesMetadata:
     """original volume dimensions (x, y, z) or (width, height, depth)"""
+
     original_dims: tuple[int]
     """color depth - either 8bit or 16bit"""
     color_depth: int
@@ -32,7 +33,7 @@ class ImagesConverter(BaseConverter):
         - PNG (.png)
     """
 
-    supported_formats: dict[str, str] = {"TIFF": ".tif", "PNG": ".png"}
+    supported_formats: dict[str, str] = {"tiff": ".tif", "png": ".png"}
 
     def __init__(self) -> None:
         super().__init__()
@@ -322,7 +323,7 @@ class ImagesConverter(BaseConverter):
 if __name__ == "__main__":
     converter = ImagesConverter()
     converter.import_dataset(
-        dataset_dir=r"",
+        dataset_dir=r"C:\Users\walid\Desktop\CTDatasets\dataset_02",
         chunk_size=128,
         lz4_compressed=False,
     )
