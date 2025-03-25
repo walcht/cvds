@@ -24,17 +24,13 @@ def get_sorted_images_from_dir(
 
 def get_metadata(
     sorted_image_fps: list[str],
-    brick_size: int,
     max_octree_depth: int,
 ):
     img = cv.imread(sorted_image_fps[0], cv.IMREAD_GRAYSCALE)
     original_dims = np.array([img.shape[1], img.shape[0], len(sorted_image_fps)], dtype=np.uint32)
-    dims = np.ceil(original_dims / brick_size).astype(np.uint32) * brick_size
     return {
-        "brick_size": brick_size,
         "max_octree_depth": max_octree_depth,
-        "original_dims": original_dims,
-        "dims": dims,
+        "dims": original_dims
     }
 
 
@@ -43,7 +39,6 @@ def generate_residency_octree(
     metadata: dict,
 ) -> np.ndarray:
     dims = metadata["dims"]
-    original_dims = metadata["original_dims"]
     max_octree_depth = metadata["max_octree_depth"]
     nbr_elements = (int)((8 ** (max_octree_depth + 1) - 1) / 7)
     residency_octree = np.zeros(
@@ -66,11 +61,7 @@ def generate_residency_octree(
 
     voxel_spatial_extent = (1.0 / dims[0], 1.0 / dims[1], 1.0 / dims[2])
     for slice_idx in trange(len(sorted_image_fps), desc="reading image slice", unit="slice"):
-        img = np.pad(
-            cv.imread(sorted_image_fps[slice_idx], cv.IMREAD_GRAYSCALE),
-            pad_width=((0, dims[1] - original_dims[1]), (0, dims[0] - original_dims[0])),
-            constant_values=(0,),
-        )
+        img = cv.imread(sorted_image_fps[slice_idx], cv.IMREAD_GRAYSCALE)
         for i in range(len(residency_octree)):
             slice_pos_z = (voxel_spatial_extent[2] / 2.0) + slice_idx * voxel_spatial_extent[2]
             side_halved = residency_octree[i]["side_halved"]
@@ -275,7 +266,7 @@ def serialize_residency_octree(residency_octree: np.ndarray, output: str) -> Non
 
 if __name__ == "__main__":
     sorted_images_fps = get_sorted_images_from_dir(r"C:\Users\walid\Desktop\CTDatasets\dataset_02")
-    metadata = get_metadata(sorted_images_fps, brick_size=128, max_octree_depth=5)
+    metadata = get_metadata(sorted_images_fps, max_octree_depth=5)
     residency_octree = generate_residency_octree(sorted_images_fps, metadata)
     serialize_residency_octree(residency_octree, "residency_octree.bin")
     stats = compute_stats(residency_octree, metadata)
