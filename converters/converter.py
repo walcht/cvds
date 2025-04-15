@@ -19,6 +19,7 @@ class CVDSMetadata:
     nbr_resolution_lvls: int
     downsampling_inter: Literal["trilinear"]
     color_depth: int
+    force_8bit_conversion: bool
     lz4_compressed: bool
     decompressed_chunk_size_in_bytes: int
     voxel_dims: tuple[int]

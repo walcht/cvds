@@ -1,4 +1,3 @@
-from io import TextIOWrapper, BufferedWriter
 from converter import BaseConverter, CVDSMetadata
 from dataclasses import dataclass
 import os
@@ -8,10 +7,10 @@ import numpy as np
 import cv2 as cv
 from numpy.typing import NDArray
 import click
-import lz4.frame
 from tqdm import trange
 from typing import Any
 import json
+import lz4.block
 
 
 @dataclass
@@ -21,6 +20,7 @@ class ImagesMetadata:
     original_dims: tuple[int]
     """color depth - either 8bit or 16bit"""
     color_depth: int
+    converted_to_8bit: bool
 
 
 class ImagesConverter(BaseConverter):
@@ -33,7 +33,7 @@ class ImagesConverter(BaseConverter):
         - PNG (.png)
     """
 
-    supported_formats: dict[str, str] = {"tiff": ".tif", "png": ".png"}
+    supported_formats: dict[str, str] = {"tiff": ".tif", "png": ".png", "bmp": ".bmp"}
 
     def __init__(self) -> None:
         super().__init__()
@@ -55,10 +55,18 @@ class ImagesConverter(BaseConverter):
             print("could not find any supported image files")
         return []
 
-    def extract_images_metadata(self, sorted_image_fps: list[str], verbose: bool = True) -> ImagesMetadata:
+    def extract_images_metadata(
+        self,
+        sorted_image_fps: list[str],
+        force_8bit_conversion=True,
+        verbose: bool = True,
+    ) -> ImagesMetadata:
         dims: NDArray[np.uint32]
         color_depth: np.dtype
-        img = cv.imread(sorted_image_fps[0], cv.IMREAD_GRAYSCALE | cv.IMREAD_ANYDEPTH)
+        if force_8bit_conversion:
+            img = cv.imread(sorted_image_fps[0], cv.IMREAD_GRAYSCALE)
+        else:
+            img = cv.imread(sorted_image_fps[0], cv.IMREAD_GRAYSCALE | cv.IMREAD_ANYDEPTH)
         dims = (img.shape[1], img.shape[0], len(sorted_image_fps))
         img_dtype = img.dtype
         if img_dtype == np.uint8:
@@ -69,7 +77,10 @@ class ImagesConverter(BaseConverter):
             raise ValueError(f"unsupported image color depth: {img_dtype}")
         # verify that all provided images are consistent
         for fp in sorted_image_fps:
-            img = cv.imread(fp, cv.IMREAD_GRAYSCALE | cv.IMREAD_ANYDEPTH)
+            if force_8bit_conversion:
+                img = cv.imread(fp, cv.IMREAD_GRAYSCALE)
+            else:
+                img = cv.imread(fp, cv.IMREAD_GRAYSCALE | cv.IMREAD_ANYDEPTH)
             if img.dtype != img_dtype:
                 raise ValueError(f"inconsistent image color depth across volume image slice(s): {fp}")
             if (img.shape[1] != dims[0]) or (img.shape[0] != dims[1]):
@@ -77,7 +88,7 @@ class ImagesConverter(BaseConverter):
         if verbose:
             print(f"volume color depth: {color_depth}")
             print(f"original volume dimensions (x, y, z): ({dims[0]},{dims[1]},{dims[2]})")
-        return ImagesMetadata(original_dims=dims, color_depth=color_depth)
+        return ImagesMetadata(original_dims=dims, color_depth=color_depth, converted_to_8bit=force_8bit_conversion)
 
     def import_dataset(
         self,
@@ -85,13 +96,14 @@ class ImagesConverter(BaseConverter):
         chunk_size: int = 128,
         nbr_resolution_levels: int = -1,
         lz4_compressed: bool = True,
+        force_8bit_conversion: bool = True,
     ) -> None:
         if not os.path.isdir(dataset_dir):
             raise NotADirectoryError(f"provided images path is not a directory path: ${dataset_dir}")
         self.sorted_image_fps = self.get_sorted_images_from_dir(dataset_dir)
         if not self.sorted_image_fps:
             raise RuntimeError("no images of any supported formats is found in the provided directory")
-        metadata = self.extract_images_metadata(self.sorted_image_fps)
+        metadata = self.extract_images_metadata(self.sorted_image_fps, force_8bit_conversion)
         max_res_lvl = self.get_max_allowed_resolution_level(metadata.original_dims, chunk_size)
         nbr_resolution_levels = min(nbr_resolution_levels, max_res_lvl)
         if nbr_resolution_levels < 0:
@@ -119,6 +131,7 @@ class ImagesConverter(BaseConverter):
             original_dims=metadata.original_dims,
             chunk_size=chunk_size,
             color_depth=metadata.color_depth,
+            force_8bit_conversion=force_8bit_conversion,
             nbr_resolution_lvls=nbr_resolution_levels,
             nbr_chunks_per_resolution_lvl=nbr_chunks_per_res_lvl,
             total_nbr_chunks=total_nbr_chunks,
@@ -195,11 +208,14 @@ class ImagesConverter(BaseConverter):
                 if metadata.lz4_compressed:
                     chunk_fp = os.path.join(res_lvl_chunks_path, f"chunk_{chunk_id}.cvds.lz4")
                     decompressed_data: bytes
-                    with lz4.frame.open(chunk_fp, mode="r") as bs:
-                        decompressed_data = bs.read()
-                    chunk_slice = np.memmap(
-                        decompressed_data, img_dtype, "r", offset, (metadata.chunk_size, metadata.chunk_size)
-                    )
+                    with open(chunk_fp, mode="rb") as bs:
+                        decompressed_data = lz4.block.decompress(bs.read())
+                    chunk_slice = np.frombuffer(
+                        decompressed_data,
+                        img_dtype,
+                        count=metadata.chunk_size * metadata.chunk_size * bpp,  # TODO: verify this
+                        offset=offset,
+                    ).reshape((metadata.chunk_size, metadata.chunk_size))
                 else:
                     chunk_fp = os.path.join(res_lvl_chunks_path, f"chunk_{chunk_id}.cvds")
                     chunk_slice = np.memmap(
@@ -213,6 +229,39 @@ class ImagesConverter(BaseConverter):
             img_fp: str = os.path.join(output_dir, f"{slice_id}.{format.lower()}")
             cv.imwrite(img_fp, img_data)
 
+    def _post_processing(
+        self,
+        output_dir: str,
+    ):
+        # do nothing LZ4 compression is disabled
+        if not self.metadata.lz4_compressed:
+            return
+        logging.info("starting post processing step(s) ...")
+        for res_lvl in range(0, self.metadata.nbr_resolution_lvls):
+            res_lvl_dir = os.path.join(output_dir, f"resolution_level_{res_lvl}")
+            for chunk_id in trange(
+                0,
+                self.metadata.total_nbr_chunks[res_lvl],
+                desc=f"compressing binary chunks for res lvl: {res_lvl}",
+                unit="chunks",
+            ):
+                uncompressed_fp = os.path.join(res_lvl_dir, f"chunk_{chunk_id}.cvds")
+                compressed_fp = os.path.join(res_lvl_dir, f"chunk_{chunk_id}.cvds.lz4")
+                with open(uncompressed_fp, mode="rb") as uncompressed_bs:
+                    with open(compressed_fp, mode="wb") as compressed_bs:
+                        compressed_bs.write(
+                            lz4.block.compress(
+                                uncompressed_bs.read(),
+                                mode="high_compression",
+                                # make sure this is set to False otherwise C# side will not work!
+                                store_size=False,
+                            )
+                        )
+                # don't forget to remove the uncompressed chunk
+                os.remove(uncompressed_fp)
+                pass
+        logging.info("post processing done")
+
     def _write_slice(
         self,
         data: NDArray[Any],
@@ -223,21 +272,13 @@ class ImagesConverter(BaseConverter):
     ) -> None:
         for i in range(nbr_chunks_x * nbr_chunks_y):
             chunk_id = i + (nbr_written_slices // self.metadata.chunk_size) * nbr_chunks_x * nbr_chunks_y
-            try:
-                binary_stream: TextIOWrapper | BufferedWriter
-                if self.metadata.lz4_compressed:
-                    fp = os.path.join(resolution_lvl_dir, f"chunk_{chunk_id}.cvds.lz4")
-                    binary_stream = lz4.frame.open(fp, mode="ab", compression_level=lz4.frame.COMPRESSIONLEVEL_MAX)
-                else:
-                    fp = os.path.join(resolution_lvl_dir, f"chunk_{chunk_id}.cvds")
-                    binary_stream = open(fp, mode="ab")
+            fp = os.path.join(resolution_lvl_dir, f"chunk_{chunk_id}.cvds")
+            with open(fp, mode="ab") as binary_stream:
                 row_start_idx = self.metadata.chunk_size * (i // nbr_chunks_x)
                 row_end_idx = row_start_idx + self.metadata.chunk_size
                 col_start_idx = self.metadata.chunk_size * (i % nbr_chunks_x)
                 col_end_idx = col_start_idx + self.metadata.chunk_size
                 binary_stream.write(data[row_start_idx:row_end_idx, col_start_idx:col_end_idx].tobytes())
-            finally:
-                binary_stream.close()
 
     def write_binary_chunks(
         self,
@@ -269,10 +310,13 @@ class ImagesConverter(BaseConverter):
             averaged_slices_data: NDArray[np.float32] | None = None
             nbr_written_slices: int = 0
             for slice_idx in trange(
-                len(self.sorted_image_fps), desc=f"writing chunks for resolution level {res_lvl}", unit="slice"
+                len(self.sorted_image_fps), desc=f"writing chunks for resolution level {res_lvl}", unit="slices"
             ):
                 # read and downsample current slice
-                img = cv.imread(self.sorted_image_fps[slice_idx], cv.IMREAD_GRAYSCALE | cv.IMREAD_ANYDEPTH)
+                if self.metadata.force_8bit_conversion:
+                    img = cv.imread(self.sorted_image_fps[slice_idx], cv.IMREAD_GRAYSCALE)
+                else:
+                    img = cv.imread(self.sorted_image_fps[slice_idx], cv.IMREAD_GRAYSCALE | cv.IMREAD_ANYDEPTH)
                 slice_data = cv.resize(img, (dims[0], dims[1]), 0, 0, cv.INTER_LINEAR)
                 # add padding (note that we add padding after downsampling to avoid averaging with padded values!)
                 padded_slice_data = np.pad(
@@ -306,6 +350,8 @@ class ImagesConverter(BaseConverter):
             assert nbr_written_slices == nbr_chunks[2] * chunk_size, (
                 f"unexpected number of written slice for the resolution level: {res_lvl}"
             )
+        # finally, perform post processing (e.g., to compress the chunks because stream compression is a bitch)
+        self._post_processing(output_dir)
 
     @staticmethod
     def is_this_converter_suitable(
@@ -323,10 +369,15 @@ class ImagesConverter(BaseConverter):
 if __name__ == "__main__":
     converter = ImagesConverter()
     converter.import_dataset(
-        dataset_dir=r"C:\Users\walid\Desktop\CTDatasets\dataset_02",
-        chunk_size=128,
-        lz4_compressed=False,
+        dataset_dir=r"C:\Users\walid\Desktop\thesis_test_datasets\Fish_200MB\slices",
+        chunk_size=256,
+        lz4_compressed=True,
+        force_8bit_conversion=True
     )
-    converter.write_metadata(r"output")
-    converter.write_binary_chunks(r"output")
+    converter.write_metadata(r"C:\Users\walid\Desktop\chunk_size_param_stats\Fish 256 LZ4")
+    converter.write_binary_chunks(r"C:\Users\walid\Desktop\chunk_size_param_stats\Fish 256 LZ4")
+
+    # converter.convert_cvds_dataset(
+    #     r"C:\Users\walid\Desktop\test_dataset_compressed", output_dir="tmp", resolution_lvl=0
+    # )
     print("done")
