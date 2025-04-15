@@ -9,7 +9,7 @@ def get_sorted_images_from_dir(
     dataset_dir: str,
     verbose: bool = True,
 ) -> list[str]:
-    supported_formats: dict[str, str] = {"tiff": ".tif", "png": ".png"}
+    supported_formats: dict[str, str] = {"tiff": ".tif", "png": ".png", "bmp": ".bmp"}
     for supported_format, ext in supported_formats.items():
         fps = [fp for fp in glob.glob(os.path.join(dataset_dir, f"*{ext}"), recursive=False)]
         if fps:
@@ -265,7 +265,7 @@ def serialize_residency_octree(residency_octree: np.ndarray, output: str) -> Non
 
 
 if __name__ == "__main__":
-    sorted_images_fps = get_sorted_images_from_dir(r"C:\Users\walid\Desktop\CTDatasets\dataset_02")
+    sorted_images_fps = get_sorted_images_from_dir(r"C:\Users\walid\Desktop\thesis_test_datasets\Turtle\slices")
     metadata = get_metadata(sorted_images_fps, max_octree_depth=5)
     residency_octree = generate_residency_octree(sorted_images_fps, metadata)
     serialize_residency_octree(residency_octree, "residency_octree.bin")

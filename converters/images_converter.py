@@ -353,6 +353,25 @@ class ImagesConverter(BaseConverter):
         # finally, perform post processing (e.g., to compress the chunks because stream compression is a bitch)
         self._post_processing(output_dir)
 
+    def write_histogram(
+        self,
+        output_dir: str,
+        resolution: int = 1024,
+    ) -> np.ndarray:
+        hist = np.zeros((resolution,), dtype=np.uint64)
+        for slice_idx in trange(len(self.sorted_image_fps), desc="reading image slice", unit="slice"):
+            img = cv.imread(self.sorted_image_fps[slice_idx], cv.IMREAD_GRAYSCALE)
+            np.add(
+                np.histogram(
+                    img, bins=resolution, range=(np.iinfo(np.uint8).min, np.iinfo(np.uint8).max), density=False
+                )[0].astype(np.uint64),
+                hist,
+                out=hist,
+            )
+
+        with open(os.path.join(output_dir, "histogram.bin"), mode="wb") as bs:
+            bs.write(hist.tobytes())
+
     @staticmethod
     def is_this_converter_suitable(
         dataset_dir: str,
@@ -372,10 +391,11 @@ if __name__ == "__main__":
         dataset_dir=r"C:\Users\walid\Desktop\thesis_test_datasets\Fish_200MB\slices",
         chunk_size=256,
         lz4_compressed=True,
-        force_8bit_conversion=True
+        force_8bit_conversion=True,
     )
-    converter.write_metadata(r"C:\Users\walid\Desktop\chunk_size_param_stats\Fish 256 LZ4")
-    converter.write_binary_chunks(r"C:\Users\walid\Desktop\chunk_size_param_stats\Fish 256 LZ4")
+    # converter.write_metadata(r"C:\Users\walid\Desktop\chunk_size_param_stats\Fish 256 LZ4")
+    # converter.write_binary_chunks(r"C:\Users\walid\Desktop\chunk_size_param_stats\Fish 256 LZ4")
+    converter.write_histogram(output_dir=".")
 
     # converter.convert_cvds_dataset(
     #     r"C:\Users\walid\Desktop\test_dataset_compressed", output_dir="tmp", resolution_lvl=0
