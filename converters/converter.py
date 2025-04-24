@@ -6,6 +6,7 @@ from exceptions import DatasetNotImported
 import os
 import json
 import numpy as np
+import numpy.typing as npt
 from dataclasses import dataclass
 from metadata_json_encoder import MetadataJSONEncoder
 
@@ -22,6 +23,12 @@ class CVDSMetadata:
     force_8bit_conversion: bool
     lz4_compressed: bool
     decompressed_chunk_size_in_bytes: int
+    vdhms: list[tuple[int, float]]
+    vdhm_penalty: float
+    octree_nrb_nodes: int
+    octree_max_depth: int
+    octree_smallest_subdivision: list[int]
+    octree_size_in_bytes: int
     voxel_dims: tuple[int]
     euler_rotation: tuple[int]
 
@@ -47,11 +54,9 @@ class BaseConverter(metaclass=BaseConverterMetaclass):
 
     def __init__(self) -> None:
         self.metadata: CVDSMetadata | None = None
+        self.output_dir: str
 
-    def write_metadata_stream(
-        self,
-        text_stream: TextIOWrapper,
-    ) -> None:
+    def _write_metadata_stream(self, text_stream: TextIOWrapper) -> None:
         """Writes CVDS metadata text to a text (string) stream
 
         Parameters
@@ -59,21 +64,13 @@ class BaseConverter(metaclass=BaseConverterMetaclass):
         text_stream: TextIOWrapper
             string stream to which the CVDS metadata text will be written
         """
+
         if self.metadata is None:
             raise DatasetNotImported("attempt at writing CVDS metadata before importing a dataset")
         json.dump(self.metadata.__dict__, text_stream, indent=2, cls=MetadataJSONEncoder)
 
-    def write_metadata(
-        self,
-        output_dir: str,
-    ) -> None:
+    def _write_metadata(self) -> None:
         """Writes CVDS metadata.json file to provided output directory
-
-        Parameters
-        ----------
-        output_dir : str
-            absolute directory path to where the `metadata.json` is going to be written. `output_dir` is expected to be
-            empty otherwise an exception will be raised.
 
         Raises
         ------
@@ -83,17 +80,133 @@ class BaseConverter(metaclass=BaseConverterMetaclass):
         DirectoryNotEmptyError
             if provided directory is not empty
         """
-        if not os.path.isdir(output_dir):
-            raise NotADirectoryError(f"provided metadata output directory path: {output_dir} does not exist.")
-        with open(os.path.join(output_dir, "metadata.json"), "wt") as ss:
-            self.write_metadata_stream(ss)
+        
+        if not os.path.isdir(self.output_dir):
+            raise NotADirectoryError(f"provided metadata output directory path: {self.output_dir} does not exist.")
+        with open(os.path.join(self.output_dir, "metadata.json"), "wt") as ss:
+            self._write_metadata_stream(ss)
+
+    def _get_downsampled_dims(
+        self,
+        original_dims: npt.NDArray,
+        resolution_lvl: int,
+    ) -> npt.NDArray:
+        """Computes the dimensions of the downsampled original volume for the provided resolution level
+
+        Parameters
+        ----------
+        original_dims: npt.NDArray
+            original volume dimensions (width, height, depths)
+
+        resolution_lvl : int
+            the resolution level for which the downsample dimensions are computed
+
+        Returns
+        -------
+        npt.NDArray
+            the downsampled volume dimensions corresponding to this resolution level (x, y, z)
+        """
+        return np.ceil(original_dims / 2**resolution_lvl).astype(np.uint32)
+
+    def _get_nbr_chunks(
+        self,
+        original_dims: npt.NDArray,
+        chunk_size: int,
+        resolution_lvl: int,
+    ) -> npt.NDArray:
+        """Computes the number of chunks along each dimension for the provided resolution level
+
+        Parameters
+        ----------
+        original_dims: npt.NDArray
+            original volume dimensions (width, height, depths)
+
+        chunk_size: int
+            chunk size
+
+        resolution_lvl : int
+            the resolution level for which the number of potentially downsampled chunks is computed
+
+        Returns
+        -------
+        npt.NDArray
+            the number of chunks corresponding to this resolution level (x, y, z)
+        """
+        downsampled_dims = self._get_downsampled_dims(original_dims, resolution_lvl)
+        return np.ceil(downsampled_dims / chunk_size).astype(np.uint32)
+
+    def _get_max_allowed_resolution_level(
+        self,
+        original_dims: npt.NDArray,
+        chunk_size: int,
+    ) -> int:
+        """Computes the maximal allowed resolution level
+
+        the critera to determine tha max allowed resolution level is that along some dimension (x, y, or z) the
+        downsampled dimension is less than or equal to chunk_size.
+
+        Parameters
+        ----------
+        original_dims: tuple[int]
+            original volume dimensions (width, height, depths)
+
+        chunk_size: int
+            chunk size
+
+        Returns
+        -------
+        int
+            the resolution level up-to and including it which should not be exceeded
+        """
+        # let x be the maximum resolution level allowed along the dimension X:
+        #       dim_x / 2**x <= chunk_size
+        #   =>  2**x * chunk_size >= dim_x
+        #   =>  x >= log_b2(dim_x / chunk_size)
+        # similarly for the dimension Y and Z. Let max_res_lvl be the maximum resolution level allowed along all dimensions:
+        #   =>  max_res_lvl = ceil(min(log_b2(dim_x / chunk_size), log_b2(dim_y / chunk_size), ...))
+        # the ceil is used because max_res_lvl has to be an integer
+        return int(np.ceil(np.min(np.log2(original_dims / chunk_size))))
+
+    def _get_paddings(
+        self,
+        original_dims: npt.NDArray,
+        chunk_size: int,
+        resolution_lvl: int,
+    ) -> npt.NDArray:
+        """Computes the paddings for the provided resolution level that need to be added to align with chunk size
+
+        Parameters
+        ----------
+        original_dims: npt.NDArray
+            original volume dimensions (width, height, depths)
+
+        chunk_size: int
+            chunk size
+
+        resolution_lvl : int
+            the resolution level for which the paddings are computed
+
+        Returns
+        -------
+        npt.NDArray
+            paddings corresponding to this resolution level (x, y, z)
+        """
+        downsampled_dims = self._get_downsampled_dims(original_dims, resolution_lvl)
+        nbr_chunks = self._get_nbr_chunks(original_dims, chunk_size, resolution_lvl)
+        return nbr_chunks * chunk_size - downsampled_dims
 
     @abstractmethod
-    def write_binary_chunks(
+    def import_dataset(
         self,
+        dataset_dir: str,
         output_dir: str,
+        chunk_size: int = 128,
+        nbr_resolution_levels: int = -1,
+        lz4_compressed: bool = True,
+        force_8bit_conversion: bool = True,
+        vdhm_tolerance_range: tuple[int, int] = (0, 10),
     ) -> None:
-        """Write CVDS binary chuncks data to the provided directory path
+        """Imports the CT (or MRI) dataset to the Chunked Volumetric DataSet (CVDS) format
 
         for each resolution level, a subdirectory is created under the name: resolution_level_<res-lvl> where
         res-lvl is replaced by the resolution level index (e.g., 0 being the highest). The chunks correspondind to that
@@ -138,140 +251,31 @@ class BaseConverter(metaclass=BaseConverterMetaclass):
 
         Parameters
         ----------
-        output_dir: str
-            path to where the binary chunks are going to be written
-        """
-        ...
-
-    def get_downsampled_dims(
-        self,
-        original_dims: tuple[int],
-        resolution_lvl: int,
-    ) -> tuple[int]:
-        """Computes the dimensions of the downsampled original volume for the provided resolution level
-
-        Parameters
-        ----------
-        original_dims: tuple[int]
-            original volume dimensions (width, height, depths)
-        resolution_lvl : int
-            the resolution level for which the downsample dimensions are computed
-
-        Returns
-        -------
-        tuple[int]
-            the downsampled volume dimensions corresponding to this resolution level (x, y, z)
-        """
-        tmp = np.ceil(np.array(original_dims) / 2**resolution_lvl).astype(np.uint32)
-        return (tmp[0].item(), tmp[1].item(), tmp[2].item())
-
-    def get_nbr_chunks(
-        self,
-        original_dims: tuple[int],
-        chunk_size: int,
-        resolution_lvl: int,
-    ) -> tuple[int]:
-        """Computes the number of chunks along each dimension for the provided resolution level
-
-        Parameters
-        ----------
-        original_dims: tuple[int]
-            original volume dimensions (width, height, depths)
-        chunk_size: int
-            chunk size
-        resolution_lvl : int
-            the resolution level for which the number of potentially downsampled chunks is computed
-
-        Returns
-        -------
-        tuple[int]
-            the number of chunks corresponding to this resolution level (x, y, z)
-        """
-        downsampled_dims = np.asarray(self.get_downsampled_dims(original_dims, resolution_lvl), dtype=np.uint32)
-        tmp = np.ceil(downsampled_dims / chunk_size).astype(np.uint32)
-        return (tmp[0].item(), tmp[1].item(), tmp[2].item())
-
-    def get_max_allowed_resolution_level(
-        self,
-        original_dims: tuple[int],
-        chunk_size: int,
-    ) -> int:
-        """Computes the maximal allowed resolution level
-
-        the critera to determine tha max allowed resolution level is that along some dimension (x, y, or z) the
-        downsampled dimension is less than or equal to chunk_size.
-
-        Parameters
-        ----------
-        original_dims: tuple[int]
-            original volume dimensions (width, height, depths)
-        chunk_size: int
-            chunk size
-
-        Returns
-        -------
-        int
-            the resolution level up-to and including it which should not be exceeded
-        """
-        # let x be the maximum resolution level allowed along the dimension X:
-        #       dim_x / 2**x <= chunk_size
-        #   =>  2**x * chunk_size >= dim_x
-        #   =>  x >= log_b2(dim_x / chunk_size)
-        # similarly for the dimension Y and Z. Let max_res_lvl be the maximum resolution level allowed along all dimensions:
-        #   =>  max_res_lvl = ceil(min(log_b2(dim_x / chunk_size), log_b2(dim_y / chunk_size), ...))
-        # the ceil is used because max_res_lvl has to be an integer
-        return int(np.ceil(np.min(np.log2(np.array(original_dims) / chunk_size))))
-
-    def get_paddings(
-        self,
-        original_dims: tuple[int],
-        chunk_size: int,
-        resolution_lvl: int,
-    ) -> tuple[int]:
-        """Computes the paddings for the provided resolution level that need to be added to align with chunk size
-
-        Parameters
-        ----------
-        original_dims: tuple[int]
-            original volume dimensions (width, height, depths)
-        chunk_size: int
-            chunk size
-        resolution_lvl : int
-            the resolution level for which the paddings are computed
-
-        Returns
-        -------
-        tuple[int]
-            paddings corresponding to this resolution level (x, y, z)
-        """
-        downsampled_dims = np.array(self.get_downsampled_dims(original_dims, resolution_lvl), dtype=np.uint32)
-        nbr_chunks = np.array(self.get_nbr_chunks(original_dims, chunk_size, resolution_lvl), dtype=np.uint32)
-        tmp = nbr_chunks * chunk_size - downsampled_dims
-        return (tmp[0], tmp[1], tmp[2])
-
-    @abstractmethod
-    def import_dataset(
-        self,
-        dataset_dir: str,
-        chunk_size: int = 128,
-        nbr_resolution_levels: int = -1,
-        lz4_compressed: bool = True,
-    ) -> None:
-        """Imports the CT (or MRI) dataset to the Chunked Volumetric DataSet (CVDS) format
-
-        Parameters
-        ----------
         dataset_dir : str
             absolute path to a dataset directory
+
+        output_dir : str
+            absolute directory path to where the `metadata.json`, chunks in different resolution levels, the residency
+            octree, and the histogram are going to be written. `output_dir` is expected to be empty otherwise an
+            exception will be raised.
+
         chunk_size : int, optional
             chunk size (i.e., number of voxels per chunk dimension). Should be a power of 2, by default 128
+
         nbr_resolution_levels : int, optional
             number of resolution levels to be generated up-to and including this resolution_level.
             resolution level 0 corresponds to the original and highest resolution. resolution level 1's chunks cover
             twice the volume covered by resolution level 0's chunks, by default automatically computes the optimal
             number of resolution levels to generate
+
         lz4_compressed : bool, optional
             whether to compress the chunks using LZ4, by default True
+
+        force_8bit_conversion : bool, optional
+            if set, converts non-8-bit input datasets into a color depth of 8 bits, by default True
+
+        vdhm_tolerance_range : tuple[int, int], optional
+            for each VDHM tolerance value in this range, VDHM is measured for that tolerance, by default (0, 10)
         """
         ...
 
