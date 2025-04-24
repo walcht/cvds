@@ -104,6 +104,7 @@ class ImagesConverter(BaseConverter):
         force_8bit_conversion: bool = True,
         octree_min_nbr_voxels: int = 16,
         vdhm_tolerance_range: tuple[int, int] = (0, 10),
+        histogram_nbr_bins: int = 1024,
     ) -> None:
         if not os.path.isdir(dataset_dir):
             raise NotADirectoryError(f"provided images path is not a directory path: ${dataset_dir}")
@@ -159,6 +160,9 @@ class ImagesConverter(BaseConverter):
             volume_dims, octree_min_nbr_voxels
         )
 
+        # histogram container
+        hist = np.zeros((histogram_nbr_bins,), dtype=np.uint64)
+
         # TODO: make this the inner loop - this will significantly improve conversion time!
         for res_lvl in range(0, nbr_resolution_levels):
             # create dir containing chunks for this resolution level
@@ -182,9 +186,15 @@ class ImagesConverter(BaseConverter):
                 else:
                     img = cv.imread(self.sorted_image_fps[slice_idx], cv.IMREAD_GRAYSCALE | cv.IMREAD_ANYDEPTH)
 
-                # write slice data to the residency octree
+                # write slice data to the residency octree and add its histogram
                 if res_lvl == 0:
                     octree_utils.write_slice_to_octree(img, slice_idx, residency_octree, volume_dims)
+                    hist += np.histogram(
+                        img,
+                        bins=histogram_nbr_bins,
+                        range=(np.iinfo(np.uint8).min, np.iinfo(np.uint8).max),
+                        density=False,
+                    )[0].astype(np.uint64)
 
                 # downsample slice according to current resolution level
                 slice_data = cv.resize(img, (dims[0], dims[1]), 0, 0, cv.INTER_LINEAR)
@@ -246,14 +256,15 @@ class ImagesConverter(BaseConverter):
             lz4_compressed=lz4_compressed,
             decompressed_chunk_size_in_bytes=decompressed_chunk_size_in_bytes,
             downsampling_inter="trilinear",
-            voxel_dims=(voxel_dim_x, voxel_dim_y, voxel_dim_z),
-            euler_rotation=(euler_rot_x, euler_rot_y, euler_rot_z),
             octree_max_depth=max_octree_depth,
             octree_nrb_nodes=len(residency_octree),
             octree_size_in_bytes=residency_octree.nbytes,
             octree_smallest_subdivision=(volume_dims * 2**-max_octree_depth).tolist(),
             vdhms=vdhms,
             vdhm_penalty=vdhm_penalty,
+            histogram_nbr_bins=histogram_nbr_bins,
+            voxel_dims=(voxel_dim_x, voxel_dim_y, voxel_dim_z),
+            euler_rotation=(euler_rot_x, euler_rot_y, euler_rot_z),
         )
 
         # write the metadata file
@@ -263,9 +274,12 @@ class ImagesConverter(BaseConverter):
         self._post_processing()
 
         # write the recidency octree
-        octree_utils.serialize_octree(residency_octree, os.path.join(self.output_dir, "residency_octree.bin"))
+        with open(os.path.join(self.output_dir, "residency_octree.bin"), mode="wb") as bs:
+            bs.write(residency_octree.tobytes())
 
-        # TODO: write the histogram
+        # write the histogram
+        with open(os.path.join(self.output_dir, "histogram.bin"), mode="wb") as bs:
+            bs.write(hist.tobytes())
 
     def convert_cvds_dataset(
         self,
@@ -405,25 +419,6 @@ class ImagesConverter(BaseConverter):
                 col_start_idx = chunk_size * (i % nbr_chunks_x)
                 col_end_idx = col_start_idx + chunk_size
                 binary_stream.write(data[row_start_idx:row_end_idx, col_start_idx:col_end_idx].tobytes())
-
-    def write_histogram(
-        self,
-        output_dir: str,
-        resolution: int = 1024,
-    ) -> npt.NDArray:
-        hist = np.zeros((resolution,), dtype=np.uint64)
-        for slice_idx in trange(len(self.sorted_image_fps), desc="reading image slice", unit="slice"):
-            img = cv.imread(self.sorted_image_fps[slice_idx], cv.IMREAD_GRAYSCALE)
-            np.add(
-                np.histogram(
-                    img, bins=resolution, range=(np.iinfo(np.uint8).min, np.iinfo(np.uint8).max), density=False
-                )[0].astype(np.uint64),
-                hist,
-                out=hist,
-            )
-
-        with open(os.path.join(output_dir, "histogram.bin"), mode="wb") as bs:
-            bs.write(hist.tobytes())
 
     @staticmethod
     def is_this_converter_suitable(

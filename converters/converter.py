@@ -29,6 +29,7 @@ class CVDSMetadata:
     octree_max_depth: int
     octree_smallest_subdivision: list[int]
     octree_size_in_bytes: int
+    histogram_nbr_bins: int
     voxel_dims: tuple[int]
     euler_rotation: tuple[int]
 

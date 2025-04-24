@@ -229,22 +229,6 @@ def write_slice_to_octree(
         octree[i]["data"] = (octree[i]["data"] & 0xFFFF0000) | (np.uint32(node_max) << 8) | (node_min << 0)
 
 
-def serialize_octree(octree: np.ndarray, output: str) -> None:
-    """Serializes the provided residency octree
-
-    Parameters
-    ----------
-    residency_octree : np.ndarray
-        residency octree to serialize
-
-    output : str
-        filepath at which the raw bytes of the residency octree will be written
-    """
-
-    with open(output, mode="wb") as bs:
-        bs.write(octree.tobytes())
-
-
 def VDHM(residency_octree: np.ndarray, node_idx: int, tolerance: int = 0, penalty: float = 8.05) -> float:
     # in case this is a homogeneous node, return 1
     node_min = (residency_octree[node_idx]["data"] >> 0) & 0xFF
