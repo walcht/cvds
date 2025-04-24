@@ -158,3 +158,4 @@ output/
 test_datasets/
 .vscode/
 residency_octree.bin
+tmp/
