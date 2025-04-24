@@ -287,6 +287,8 @@ class ImagesConverter(BaseConverter):
         output_dir: str,
         resolution_lvl: int = 0,
         format: str = "PNG",
+        visualize_homogeneous_regions: bool = False,
+        vdhm_tolerance: int = 1,
     ) -> None:
         """Converts a given CVDS dataset to a set of images. This is mainly used for debugging/testing purposes
 
@@ -305,13 +307,16 @@ class ImagesConverter(BaseConverter):
             the image format to use, by default "PNG". Note that certain formats may not support writing 16-bit
             uint grayscale images.
         """
+
         if not os.path.isdir(cvds_dataset_dir):
             raise NotADirectoryError(f"CVDS dataset path is not a directory path: ${cvds_dataset_dir}")
+
         res_lvl_chunks_path = os.path.join(cvds_dataset_dir, f"resolution_level_{resolution_lvl}")
         if not os.path.isdir(res_lvl_chunks_path):
             raise NotADirectoryError(
                 f"CVDS dataset path doesn't contain resolution level subdirectory: {res_lvl_chunks_path}"
             )
+
         metadata_fp = os.path.join(cvds_dataset_dir, "metadata.json")
         metadata: CVDSMetadata
         with open(metadata_fp, mode="rt") as ts:
@@ -319,9 +324,17 @@ class ImagesConverter(BaseConverter):
                 metadata = CVDSMetadata(**json.load(ts))
             except json.JSONDecodeError:
                 return
+
         if resolution_lvl > metadata.nbr_resolution_lvls:
             raise Exception(f"provided resolution level is out of range: {resolution_lvl}")
-        for slice_id in trange(
+
+        residency_octree: npt.NDArray | None = None
+        if visualize_homogeneous_regions and resolution_lvl == 0:
+            residency_octree = octree_utils.import_octree(cvds_dataset_dir)
+
+        volume_dims = np.asarray(metadata.original_dims, dtype=np.uint32)
+
+        for slice_idx in trange(
             metadata.nbr_chunks_per_resolution_lvl[resolution_lvl][2] * metadata.chunk_size,
             desc=f"converting CVDS to images [res={resolution_lvl}]",
             unit="image",
@@ -330,6 +343,7 @@ class ImagesConverter(BaseConverter):
             nbr_chunks_y = metadata.nbr_chunks_per_resolution_lvl[resolution_lvl][1]
             dim_x = nbr_chunks_x * metadata.chunk_size
             dim_y = nbr_chunks_y * metadata.chunk_size
+
             img_dtype: np.dtype
             bpp: int  # bytes per pixel
             if metadata.color_depth == 8:
@@ -340,17 +354,18 @@ class ImagesConverter(BaseConverter):
                 bpp = 2
             else:
                 raise ValueError(f"unsupported color depth value: {metadata.color_depth}")
+
             img_data = np.ndarray((dim_y, dim_x), dtype=img_dtype)
             for i in range(nbr_chunks_x * nbr_chunks_y):
-                chunk_id = i + nbr_chunks_x * nbr_chunks_y * (slice_id // metadata.chunk_size)
+                chunk_id = i + nbr_chunks_x * nbr_chunks_y * (slice_idx // metadata.chunk_size)
                 chunk_fp: str
                 chunk_slice: np.memmap
-                offset = (slice_id % metadata.chunk_size) * metadata.chunk_size * metadata.chunk_size * bpp
+                offset = (slice_idx % metadata.chunk_size) * metadata.chunk_size * metadata.chunk_size * bpp
                 if metadata.lz4_compressed:
                     chunk_fp = os.path.join(res_lvl_chunks_path, f"chunk_{chunk_id}.cvds.lz4")
                     decompressed_data: bytes
                     with open(chunk_fp, mode="rb") as bs:
-                        decompressed_data = lz4.block.decompress(bs.read())
+                        decompressed_data = lz4.block.decompress(bs.read(), uncompressed_size=metadata.chunk_size**3)
                     chunk_slice = np.frombuffer(
                         decompressed_data,
                         img_dtype,
@@ -367,7 +382,21 @@ class ImagesConverter(BaseConverter):
                 col_start_idx = metadata.chunk_size * (i % nbr_chunks_x)
                 col_end_idx = col_start_idx + metadata.chunk_size
                 img_data[row_start_idx:row_end_idx, col_start_idx:col_end_idx] = chunk_slice
-            img_fp: str = os.path.join(output_dir, f"{slice_id}.{format.lower()}")
+
+            img_fp: str = os.path.join(output_dir, f"{slice_idx}.{format.lower()}")
+
+            # in case visualizing the octree's homogeneous nodes is intended, draw rectangles
+            if visualize_homogeneous_regions and resolution_lvl == 0 and slice_idx < volume_dims[2]:
+                # has to be converted to RGB to see the red/green rectangles
+                img_data = cv.cvtColor(img_data, cv.COLOR_GRAY2RGB)
+                img_data = octree_utils.draw_homogeneous_regions(
+                    residency_octree,
+                    node_idx=0,
+                    slice_data=img_data,
+                    slice_idx=slice_idx,
+                    vdhm_tolerance=vdhm_tolerance,
+                    volume_dims=volume_dims,
+                )
             cv.imwrite(img_fp, img_data)
 
     # TODO: directly use stream compression instead
@@ -435,16 +464,20 @@ class ImagesConverter(BaseConverter):
 
 if __name__ == "__main__":
     converter = ImagesConverter()
-    converter.import_dataset(
-        dataset_dir=r"C:\Users\walid\Desktop\thesis_test_datasets\Fish_200MB\slices",
-        output_dir=r"output",
-        chunk_size=128,
-        lz4_compressed=True,
-        force_8bit_conversion=True,
-        octree_min_nbr_voxels=16,
-        vdhm_tolerance_range=(0, 25),
-    )
-    # converter.convert_cvds_dataset(
-    #     r"C:\Users\walid\Desktop\test_dataset_compressed", output_dir="tmp", resolution_lvl=0
+    # converter.import_dataset(
+    #     dataset_dir=r"C:\Users\walid\Desktop\thesis_test_datasets\Fish_200MB\slices",
+    #     output_dir=r"output",
+    #     chunk_size=128,
+    #     lz4_compressed=True,
+    #     force_8bit_conversion=True,
+    #     octree_min_nbr_voxels=16,
+    #     vdhm_tolerance_range=(0, 25),
     # )
+    converter.convert_cvds_dataset(
+        r"output",
+        output_dir="tmp",
+        resolution_lvl=0,
+        visualize_homogeneous_regions=True,
+        vdhm_tolerance=25,
+    )
     print("done")

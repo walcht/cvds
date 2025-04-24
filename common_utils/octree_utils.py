@@ -1,13 +1,28 @@
 import numpy as np
+import numpy.typing as npt
+import os
+import cv2 as cv
 from cv2.typing import MatLike
 
+octree_node_dtype = np.dtype(
+    [
+        ("center_x", np.float32),  # 4 bytes
+        ("center_y", np.float32),  # 4 bytes
+        ("center_z", np.float32),  # 4 bytes
+        ("side_halved", np.float32),  # 4 bytes
+        ("data", np.uint32),  # 4 bytes
+    ]
+)
 
-def create_and_initialize_octree(volume_dims: np.ndarray[int], min_nbr_voxels: int = 32) -> tuple[np.ndarray, int]:
+
+def create_and_initialize_octree(
+    volume_dims: npt.NDArray[np.uint32], min_nbr_voxels: int = 32
+) -> tuple[npt.NDArray, int]:
     """Creates and initializes a residency octree data structure
 
     Parameters
     ----------
-    volume_dims : np.ndarray[int]
+    volume_dims : npt.NDArray[np.uint32]
         original dimensions of the visualized volume. Used to determine voxel dimensions in normalized volume space.
 
     min_nbr_voxels : int, optional
@@ -15,7 +30,7 @@ def create_and_initialize_octree(volume_dims: np.ndarray[int], min_nbr_voxels: i
 
     Returns
     -------
-    tuple[np.ndarray, int]
+    tuple[npt.NDArray, int]
         First field is the initialized residency octree data structure with mins and maxes set to 255 and 0,
         respectively. Second field is the max depth of the residency octree (inclusive).
     """
@@ -27,13 +42,7 @@ def create_and_initialize_octree(volume_dims: np.ndarray[int], min_nbr_voxels: i
 
     residency_octree = np.zeros(
         octree_nbr_elements,
-        dtype=[
-            ("center_x", np.float32),  # 4 bytes
-            ("center_y", np.float32),  # 4 bytes
-            ("center_z", np.float32),  # 4 bytes
-            ("side_halved", np.float32),  # 4 bytes
-            ("data", np.uint32),  # 4 bytes
-        ],
+        dtype=octree_node_dtype,
     )
 
     # initialize first node
@@ -45,7 +54,7 @@ def create_and_initialize_octree(volume_dims: np.ndarray[int], min_nbr_voxels: i
     return residency_octree, max_octree_depth
 
 
-def get_max_octree_depth(volume_dims: np.ndarray[int], min_nbr_voxels: int = 32) -> int:
+def get_max_octree_depth(volume_dims: npt.NDArray[np.uint32], min_nbr_voxels: int = 32) -> int:
     """Uses a heuristic to determine the maximum octree depth.
 
     Since octrees are used for empty space skipping, skipping very small regions may significantly hurt the performance.
@@ -56,7 +65,7 @@ def get_max_octree_depth(volume_dims: np.ndarray[int], min_nbr_voxels: int = 32)
 
     Parameters
     ----------
-    volume_dims : np.ndarray[int]
+    volume_dims : npt.NDArray[np.uint32]
         original dimensions of the visualized volume. Used to determine voxel dimensions in normalized volume space.
 
     min_nbr_voxels : int, optional
@@ -73,12 +82,12 @@ def get_max_octree_depth(volume_dims: np.ndarray[int], min_nbr_voxels: int = 32)
     return np.floor(np.min(d))
 
 
-def populate_children(octree: np.ndarray, parent_node_idx: int) -> None:
+def populate_children(octree: npt.NDArray, parent_node_idx: int) -> None:
     """Recursively initializes the children of the provided residency octree node
 
     Parameters
     ----------
-    residency_octree : np.ndarray
+    residency_octree : npt.NDArray
         residency octree to be initialized. It is assumed that root node is already initialized
 
     parent_node_idx : int
@@ -182,8 +191,8 @@ def populate_children(octree: np.ndarray, parent_node_idx: int) -> None:
 def write_slice_to_octree(
     slice_data: MatLike,
     slice_idx: int,
-    octree: np.ndarray,
-    volume_dims: np.ndarray,
+    octree: npt.NDArray,
+    volume_dims: npt.NDArray[np.uint32],
 ) -> None:
     """_summary_
 
@@ -193,9 +202,9 @@ def write_slice_to_octree(
         _description_
     slice_idx : int
         _description_
-    octree : np.ndarray
+    octree : npt.NDArray
         _description_
-    volume_dims : np.ndarray
+    volume_dims : npt.NDArray[np.uint32]
         _description_
     """
 
@@ -229,7 +238,7 @@ def write_slice_to_octree(
         octree[i]["data"] = (octree[i]["data"] & 0xFFFF0000) | (np.uint32(node_max) << 8) | (node_min << 0)
 
 
-def VDHM(residency_octree: np.ndarray, node_idx: int, tolerance: int = 0, penalty: float = 8.05) -> float:
+def VDHM(residency_octree: npt.NDArray, node_idx: int, tolerance: int = 0, penalty: float = 8.05) -> float:
     # in case this is a homogeneous node, return 1
     node_min = (residency_octree[node_idx]["data"] >> 0) & 0xFF
     node_max = (residency_octree[node_idx]["data"] >> 8) & 0xFF
@@ -247,3 +256,62 @@ def VDHM(residency_octree: np.ndarray, node_idx: int, tolerance: int = 0, penalt
         accm += VDHM(residency_octree, child_idx, tolerance, penalty)
 
     return accm / penalty
+
+
+def draw_homogeneous_regions(
+    residency_octree: npt.NDArray,
+    node_idx: int,
+    slice_data: npt.NDArray,
+    slice_idx: int,
+    vdhm_tolerance: int,
+    volume_dims: npt.NDArray,
+) -> None:
+    node = residency_octree[node_idx]
+    # in case this node falls out of the spatial extent of the provided slice, do nothing
+    voxel_size = 1.0 / volume_dims
+    slice_normalized_z_coord = voxel_size[2] / 2.0 + slice_idx * voxel_size[2]
+    if (slice_normalized_z_coord < (node["center_z"] - node["side_halved"])) or (
+        slice_normalized_z_coord >= (node["center_z"] + node["side_halved"])
+    ):
+        return slice_data
+
+    # in case this is a homogeneous node, draw green rectangle and return the modified slice data
+    node_min = (node["data"] >> 0) & 0xFF
+    node_max = (node["data"] >> 8) & 0xFF
+    if (node_max - node_min) <= vdhm_tolerance:
+        slice_data = cv.rectangle(
+            slice_data,
+            (
+                round((node["center_x"] - node["side_halved"]) * volume_dims[0]),
+                round((node["center_y"] - node["side_halved"]) * volume_dims[1]),
+            ),
+            (
+                round((node["center_x"] + node["side_halved"]) * volume_dims[0]),
+                round((node["center_y"] + node["side_halved"]) * volume_dims[1]),
+            ),
+            (0, 255, 0),
+            1,
+        )
+        return slice_data
+
+    # in case this is a non-homogeneous leaf node, dont draw anything
+    if (8 * node_idx + 1) >= len(residency_octree):
+        return slice_data
+
+    # otherwise, recursively check child nodes and draw rectangles if necessary
+    for i in range(1, 9):
+        child_idx = 8 * node_idx + i
+        slice_data = draw_homogeneous_regions(
+            residency_octree,
+            child_idx,
+            slice_data,
+            slice_idx,
+            vdhm_tolerance,
+            volume_dims,
+        )
+
+    return slice_data
+
+
+def import_octree(cvds_dir_path: str) -> npt.NDArray:
+    return np.fromfile(os.path.join(cvds_dir_path, "residency_octree.bin"), dtype=octree_node_dtype)
