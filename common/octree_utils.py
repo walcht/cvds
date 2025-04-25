@@ -269,7 +269,7 @@ def draw_homogeneous_regions(
     node = residency_octree[node_idx]
     # in case this node falls out of the spatial extent of the provided slice, do nothing
     voxel_size = 1.0 / volume_dims
-    slice_normalized_z_coord = voxel_size[2] / 2.0 + slice_idx * voxel_size[2]
+    slice_normalized_z_coord = slice_idx * voxel_size[2]
     if (slice_normalized_z_coord < (node["center_z"] - node["side_halved"])) or (
         slice_normalized_z_coord >= (node["center_z"] + node["side_halved"])
     ):

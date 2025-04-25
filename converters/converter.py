@@ -23,8 +23,7 @@ class CVDSMetadata:
     force_8bit_conversion: bool
     lz4_compressed: bool
     decompressed_chunk_size_in_bytes: int
-    vdhms: list[tuple[int, float]]
-    vdhm_penalty: float
+    vdhms: list[tuple[int, float, float]]
     octree_nrb_nodes: int
     octree_max_depth: int
     octree_smallest_subdivision: list[int]
@@ -206,48 +205,60 @@ class BaseConverter(metaclass=BaseConverterMetaclass):
         lz4_compressed: bool = True,
         force_8bit_conversion: bool = True,
         vdhm_tolerance_range: tuple[int, int] = (0, 10),
+        vdhm_penalty: float = 8.001,
+        histogram_nbr_bins: int = 1024,
     ) -> None:
         """Imports the CT (or MRI) dataset to the Chunked Volumetric DataSet (CVDS) format
 
-        for each resolution level, a subdirectory is created under the name: resolution_level_<res-lvl> where
-        res-lvl is replaced by the resolution level index (e.g., 0 being the highest). The chunks correspondind to that
+        for each resolution level, a subdirectory is created under the name: **resolution_level_{res-lvl}** where
+        *res-lvl* is replaced by the resolution level index (e.g., 0 being the highest). The chunks correspondind to that
         resolution level are written in that subdirectory.
 
-        Each chunk file is create under the name: chunk_<chunk-id>.cvds[.lz4] where chunk-id is the id of the chunk
+        Each chunk file is create under the name: **chunk_{chunk-id}.cvds[.lz4]** where *chunk-id* is the id of the chunk
         in the corresponding resolution level. Chunk ID 0 is the upper left most chunk of the first slice. Chunk ID 1 is
         the next chunk along the same row, and so on:
 
         slice 0:
 
-        +   +   +   +   +   +   +   +   +   +
+            +   +   +   +   +   +   +   +   +   +
 
-        +  chunk 0  +  chunk 1  +  chunk 2  +
+            +  chunk 0  +  chunk 1  +  chunk 2  +
 
-        +   +   +   +   +   +   +   +   +   +
+            +   +   +   +   +   +   +   +   +   +
 
-        +  chunk 3  +  chunk 4  +  chunk 5  +
+            +  chunk 3  +  chunk 4  +  chunk 5  +
 
-        +   +   +   +   +   +   +   +   +   +
+            +   +   +   +   +   +   +   +   +   +
 
-        +  chunk 6  +  chunk 7  +  chunk 8  +
+            +  chunk 6  +  chunk 7  +  chunk 8  +
 
-        +   +   +   +   +   +   +   +   +   +
+            +   +   +   +   +   +   +   +   +   +
 
         slice 1:
 
-        +   +   +   +   +   +   +   +   +   +
+            +   +   +   +   +   +   +   +   +   +
 
-        +  chunk 9  +  chunk 10 +  chunk 11 +
+            +  chunk 9  +  chunk 10 +  chunk 11 +
 
-        +   +   +   +   +   +   +   +   +   +
+            +   +   +   +   +   +   +   +   +   +
 
-        +  chunk 12 +  chunk 13 +  chunk 14 +
+            +  chunk 12 +  chunk 13 +  chunk 14 +
 
-        +   +   +   +   +   +   +   +   +   +
+            +   +   +   +   +   +   +   +   +   +
 
-        +  chunk 15 +  chunk 16 +  chunk 17 +
+            +  chunk 15 +  chunk 16 +  chunk 17 +
 
-        +   +   +   +   +   +   +   +   +   +
+            +   +   +   +   +   +   +   +   +   +
+
+        Slices are ordered along the Z direction following a left hand
+        coordinate system:
+
+                    +-----------> X-axis
+                  / |
+                 /  |
+                /   |
+            Z-axis  |
+                    Y-axis
 
 
         Parameters

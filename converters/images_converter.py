@@ -6,7 +6,7 @@ if __name__ == "__main__":
 
 from converter import BaseConverter, CVDSMetadata
 from dataclasses import dataclass
-from common_utils import octree_utils
+from common import octree_utils
 import glob
 import logging
 import numpy as np
@@ -36,6 +36,7 @@ class ImagesConverter(BaseConverter):
     Supported image file formats are:
         - TIFF (.tif)
         - PNG (.png)
+        - BMP (.bmp)
     """
 
     supported_formats: dict[str, str] = {"tiff": ".tif", "png": ".png", "bmp": ".bmp"}
@@ -104,6 +105,7 @@ class ImagesConverter(BaseConverter):
         force_8bit_conversion: bool = True,
         octree_min_nbr_voxels: int = 16,
         vdhm_tolerance_range: tuple[int, int] = (0, 10),
+        vdhm_penalty: float = 8.001,
         histogram_nbr_bins: int = 1024,
     ) -> None:
         if not os.path.isdir(dataset_dir):
@@ -238,9 +240,8 @@ class ImagesConverter(BaseConverter):
             )
 
         # compute vdhm for different tolerance values
-        vdhm_penalty = 8.001  # > 8.00
         vdhms = [
-            (t, octree_utils.VDHM(residency_octree, node_idx=0, tolerance=t, penalty=vdhm_penalty))
+            (t, vdhm_penalty, octree_utils.VDHM(residency_octree, node_idx=0, tolerance=t, penalty=vdhm_penalty))
             for t in range(*vdhm_tolerance_range)
         ]
 
@@ -261,7 +262,6 @@ class ImagesConverter(BaseConverter):
             octree_size_in_bytes=residency_octree.nbytes,
             octree_smallest_subdivision=(volume_dims * 2**-max_octree_depth).tolist(),
             vdhms=vdhms,
-            vdhm_penalty=vdhm_penalty,
             histogram_nbr_bins=histogram_nbr_bins,
             voxel_dims=(voxel_dim_x, voxel_dim_y, voxel_dim_z),
             euler_rotation=(euler_rot_x, euler_rot_y, euler_rot_z),
@@ -464,20 +464,20 @@ class ImagesConverter(BaseConverter):
 
 if __name__ == "__main__":
     converter = ImagesConverter()
-    # converter.import_dataset(
-    #     dataset_dir=r"C:\Users\walid\Desktop\thesis_test_datasets\Fish_200MB\slices",
-    #     output_dir=r"output",
-    #     chunk_size=128,
-    #     lz4_compressed=True,
-    #     force_8bit_conversion=True,
-    #     octree_min_nbr_voxels=16,
-    #     vdhm_tolerance_range=(0, 25),
-    # )
-    converter.convert_cvds_dataset(
-        r"output",
-        output_dir="tmp",
-        resolution_lvl=0,
-        visualize_homogeneous_regions=True,
-        vdhm_tolerance=25,
+    converter.import_dataset(
+        dataset_dir=r"C:\Users\walid\Desktop\thesis_test_datasets\Fish_200MB\slices",
+        output_dir=r"output",
+        chunk_size=128,
+        lz4_compressed=True,
+        force_8bit_conversion=True,
+        octree_min_nbr_voxels=16,
+        vdhm_tolerance_range=(0, 50),
     )
+    # converter.convert_cvds_dataset(
+    #     r"output",
+    #     output_dir="tmp",
+    #     resolution_lvl=0,
+    #     visualize_homogeneous_regions=True,
+    #     vdhm_tolerance=50,
+    # )
     print("done")
